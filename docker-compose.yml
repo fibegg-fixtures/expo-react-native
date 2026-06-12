@@ -1,0 +1,105 @@
+name: expo-react-native
+
+services:
+  expo:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:22-bookworm-slim
+
+        WORKDIR /app
+
+        RUN apt-get update \
+          && apt-get install -y --no-install-recommends git ca-certificates \
+          && rm -rf /var/lib/apt/lists/*
+
+        RUN corepack enable
+
+        ENV PATH="/app/node_modules/.bin:$${PATH}"
+
+        EXPOSE 8081
+
+    container_name: expo-react-native
+    working_dir: /app
+    init: true
+
+    command: ["/bin/sh", "/usr/local/bin/expo-web-dev"]
+
+    ports:
+      # Host port comes from EXPO_PORT (default 8081); container always uses 8081.
+      - "${EXPO_PORT:-8081}:8081"
+
+    environment:
+      NODE_ENV: development
+      EXPO_NO_TELEMETRY: "1"
+      BROWSER: "none"
+      CI: "1"
+
+      # Helps hot reload / Fast Refresh on Docker Desktop, WSL, and bind mounts.
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+
+      # Inside the container Metro always binds to 8081.
+      EXPO_PORT: "8081"
+
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      - expo_cache:/root/.expo
+      - npm_cache:/root/.npm
+
+    configs:
+      - source: expo_web_dev
+        target: /usr/local/bin/expo-web-dev
+        mode: 0555
+
+    stdin_open: true
+    tty: true
+
+configs:
+  expo_web_dev:
+    # NOTE: $$ escapes a literal $ for docker-compose's variable interpolation
+    # so the shell sees a real $VAR at container runtime.
+    content: |
+      #!/usr/bin/env sh
+      set -eu
+
+      cd /app
+
+      if [ ! -f package.json ]; then
+        echo "No package.json found in /app."
+        echo "Create an Expo app first, for example:"
+        echo "  npx create-expo-app@latest ."
+        exit 1
+      fi
+
+      install_deps() {
+        if [ -f pnpm-lock.yaml ]; then
+          corepack pnpm install --frozen-lockfile || corepack pnpm install
+        elif [ -f yarn.lock ]; then
+          corepack yarn install --immutable || corepack yarn install
+        elif [ -f package-lock.json ]; then
+          npm ci || npm install
+        else
+          npm install
+        fi
+      }
+
+      if [ ! -x node_modules/.bin/expo ]; then
+        echo "Installing project dependencies into Docker volume /app/node_modules..."
+        install_deps
+      fi
+
+      # Some Expo templates already include these. Older/minimal templates may not.
+      if ! node -e "require.resolve('react-native-web/package.json')" >/dev/null 2>&1; then
+        echo "Installing Expo web dependencies..."
+        ./node_modules/.bin/expo install react-dom react-native-web @expo/metro-runtime
+      fi
+
+      echo "Starting Expo Web on port $${EXPO_PORT:-8081}..."
+      exec ./node_modules/.bin/expo start --web --port "$${EXPO_PORT:-8081}"
+
+volumes:
+  node_modules:
+  expo_cache:
+  npm_cache:
